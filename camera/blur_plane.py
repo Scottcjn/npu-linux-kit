@@ -2,21 +2,25 @@
 # Copyright (C) 2026 Scott Boudreaux / Elyan Labs. Commercial license: see ../COMMERCIAL.md
 #
 # Purpose-built NPU blur kernel: a CLEAN single-channel 3x3 Gaussian filter2d on the AIE.
-# Unlike the edge-detect-adapted blur, this does ONLY filter2d on a raw uint8 plane — no
-# rgba2gray round-trip, no add_weighted overlay (the sources of speckle + 2x gain). The host
-# feeds each color channel as a plane (multi-pass = re-feed) and recombines → clean color blur.
+# No rgba2gray round-trip, no add_weighted overlay (the speckle + 2x-gain sources). The host
+# feeds each color channel as a uint8 plane (multi-pass = re-feed) and recombines -> clean color blur.
+#
+# Dataflow FIX 2026-06-24: the filter's 3-line stencil consumes a WORKER-PRODUCED line stream
+# (a passthrough copy producer), exactly like edge_detect's verified rgba2gray->filter structure —
+# NOT a raw DMA forward (which caused value-dependent gain + line streaks).
 #
 # Unity gain: int16 coeffs >>8 -> int8 [[1,2,1],[2,4,2],[1,2,1]] (sum 16); filter2d stores
 # acc >> (SRS_SHIFT-8 = 4) = acc/16 = exact weighted mean.
 
 import sys
 #
-# WIP STATUS 2026-06-24: right architecture (clean single-plane, no rgba2gray/add_weighted), and the
-# filter2d kernel math is sound (uint8 data, int8 coeffs >>8, acc>>4 = unity). BUT this hand-wired
-# 3-line-stencil dataflow still shows a value-dependent gain (uniform 64->64 ok, 128->86, 200->129)
-# + horizontal line streaks -> the stencil isn't consistently fed correct lines (fifo/forward wiring).
-# NEXT: rebase the stencil on mlir-aie's verified conv2d/filter programming_example instead of
-# adapting edge_detect's worker graph. Until then, the kit's background blur uses the clean CPU path.
+# DEFINITIVE DIAGNOSIS 2026-06-24: with the correct (worker-produced) dataflow AND unity-gain coeffs,
+# the stock kernels.filter2d STILL produces value-dependent output that SATURATES bright pixels to the
+# int8-positive range: uniform 100->100 but 200->132, 255->150. The kernel's accumulation/store path
+# is built for the Laplacian (zero-centered edge outputs) and clamps a unity-sum blur of bright images.
+# This is NOT a dataflow or coeff bug (both fixed). CONCLUSION: a clean NPU blur needs a CUSTOM AIE
+# blur kernel (.cc, hand-written vector intrinsics with a proper uint8 saturate-store), not filter2d.
+# Until then the kit's background blur uses the clean CPU Gaussian (camera/README).
 import numpy as np
 import aie.iron as iron
 from aie.iron import Buffer, CompileTime, In, ObjectFifo, Out, Program, Runtime, Worker, kernels
@@ -35,6 +39,7 @@ def blur_plane(
     line_width = width
     line_ty = np.ndarray[(line_width,), np.dtype[np.uint8]]
 
+    pass_through_line = kernels.passthrough(tile_size=line_width, dtype=np.uint8)
     filter2d_line_kernel = kernels.filter2d(line_width=line_width)
     # unity-gain Gaussian (>>8 -> int8 [1,2,1;2,4,2;1,2,1], sum 16; filter2d >>4 = /16)
     filter_kernel_buff = Buffer(
@@ -45,43 +50,51 @@ def blur_plane(
         ),
     )
 
-    in_of = ObjectFifo(line_ty, name="inOF")
-    in_l1 = in_of.cons(4).forward(depth=4, name="inOF_L1")
-    out_of = ObjectFifo(line_ty, name="outOF")
-    out_l3 = out_of.cons().forward(name="outOF_L3")
+    of_in = ObjectFifo(line_ty, name="in")                       # DMA input
+    of_lines = ObjectFifo(line_ty, depth=4, name="lines")        # worker-produced line stream (filter input)
+    of_out = ObjectFifo(line_ty, name="out")                     # DMA output
 
-    def filter_fn(of_in, of_out, filter_kernel, filter2d_line):
+    workers = []
+
+    # producer: copy DMA input lines into of_lines, one per call (IRON auto-iterates over height)
+    def copy_fn(of_i, of_o, k):
+        ein = of_i.acquire(1)
+        eout = of_o.acquire(1)
+        k(ein, eout, line_width)
+        of_i.release(1)
+        of_o.release(1)
+
+    workers.append(Worker(copy_fn, [of_in.cons(), of_lines.prod(), pass_through_line]))
+
+    # filter: 3-line stencil over the produced line stream
+    def filter_fn(of_i, of_o, kernel, f2d):
         for _ in range_(sys.maxsize):
-            # top border: duplicate first row
-            ein = of_in.acquire(2)
-            eout = of_out.acquire(1)
-            filter2d_line(ein[0], ein[0], ein[1], eout, line_width, filter_kernel)
-            of_out.release(1)
-            # steady state: rows (i-1, i, i+1)
-            for _ in range_(1, height_minus_1):
-                ein = of_in.acquire(3)
-                eout = of_out.acquire(1)
-                filter2d_line(ein[0], ein[1], ein[2], eout, line_width, filter_kernel)
-                of_in.release(1)
-                of_out.release(1)
-            # bottom border: duplicate last row
-            ein = of_in.acquire(2)
-            eout = of_out.acquire(1)
-            filter2d_line(ein[0], ein[1], ein[1], eout, line_width, filter_kernel)
-            of_in.release(2)
-            of_out.release(1)
+            ein = of_i.acquire(2)                                # top border: dup first row
+            eout = of_o.acquire(1)
+            f2d(ein[0], ein[0], ein[1], eout, line_width, kernel)
+            of_o.release(1)
+            for _ in range_(1, height_minus_1):                  # steady (i-1, i, i+1)
+                ein = of_i.acquire(3)
+                eout = of_o.acquire(1)
+                f2d(ein[0], ein[1], ein[2], eout, line_width, kernel)
+                of_i.release(1)
+                of_o.release(1)
+            ein = of_i.acquire(2)                                # bottom border: dup last row
+            eout = of_o.acquire(1)
+            f2d(ein[0], ein[1], ein[1], eout, line_width, kernel)
+            of_i.release(2)
+            of_o.release(1)
 
-    worker = Worker(
-        filter_fn,
-        [in_l1.cons(), out_of.prod(), filter_kernel_buff, filter2d_line_kernel],
-        while_true=False,
+    workers.append(
+        Worker(filter_fn, [of_lines.cons(), of_out.prod(), filter_kernel_buff, filter2d_line_kernel],
+               while_true=False)
     )
 
     plane_ty = np.ndarray[(width * height,), np.dtype[np.uint8]]
     rt = Runtime()
     with rt.sequence(plane_ty, plane_ty) as (i_in, o_out):
-        rt.start(worker)
-        rt.fill(in_of.prod(), i_in)
-        rt.drain(out_l3.cons(), o_out, wait=True)
+        rt.start(*workers)
+        rt.fill(of_in.prod(), i_in)
+        rt.drain(of_out.cons(), o_out, wait=True)
 
     return Program(iron.get_current_device(), rt).resolve_program()
