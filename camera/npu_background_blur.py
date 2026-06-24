@@ -16,6 +16,7 @@
 # the edge-stylize in npu_camera_daemon.py; a clean on-NPU blur + on-NPU seg are the next builds.
 
 import os, sys, time, argparse
+_NPU_SCALE = 4
 import numpy as np, cv2
 
 MLIR_AIE = os.environ.get("MLIR_AIE_DIR", os.path.expanduser("~/open-xdna/mlir-aie"))
@@ -25,23 +26,33 @@ from blur_plane import blur_plane                    # custom clean NPU 3x3 blur
 
 
 _plane_in = _plane_out = _plane_n = None
-def npu_color_blur(bgr, W, H, passes=1):
-    """Clean color blur on the NPU: blur each channel (uint8 plane) with the custom blur3x3 kernel,
-    N passes, recombine. No rgba2gray round-trip / no add_weighted — bit-clean, no speckle."""
+def _blur_planes_npu(img, w, h, passes):
+    """Blur each color channel (uint8 plane) with the custom blur3x3 NPU kernel, N passes."""
     global _plane_in, _plane_out, _plane_n
-    if _plane_n != W * H:
-        _plane_in = iron.tensor(np.zeros(W * H, np.uint8), dtype=np.uint8, device="npu")
-        _plane_out = iron.zeros(W * H, dtype=np.uint8, device="npu")
-        _plane_n = W * H
-    out = bgr.copy()
+    if _plane_n != w * h:
+        _plane_in = iron.tensor(np.zeros(w * h, np.uint8), dtype=np.uint8, device="npu")
+        _plane_out = iron.zeros(w * h, dtype=np.uint8, device="npu")
+        _plane_n = w * h
+    out = img.copy()
     for c in range(3):
         ch = np.ascontiguousarray(out[:, :, c])
         for _ in range(passes):
             _plane_in.numpy()[:] = ch.reshape(-1)
-            blur_plane(_plane_in, _plane_out, width=W, height=H)
-            ch = _plane_out.numpy().reshape(H, W).copy()
+            blur_plane(_plane_in, _plane_out, width=w, height=h)
+            ch = _plane_out.numpy().reshape(h, w).copy()
         out[:, :, c] = ch
     return out
+
+def npu_color_blur(bgr, W, H, passes=1, scale=4):
+    """Clean color blur on the NPU. Real-time path: blur at reduced resolution (scale) then upscale —
+    background bokeh is low-frequency, so a downscaled blur is visually ~identical and ~scale^2 faster.
+    The blur itself is bit-clean (custom blur3x3 kernel: no rgba2gray round-trip, no speckle)."""
+    if scale > 1:
+        w2, h2 = (W // scale) & ~1, (H // scale) & ~1
+        small = cv2.resize(bgr, (w2, h2), interpolation=cv2.INTER_AREA)
+        sb = _blur_planes_npu(small, w2, h2, passes)
+        return cv2.resize(sb, (W, H), interpolation=cv2.INTER_LINEAR)
+    return _blur_planes_npu(bgr, W, H, passes)
 
 
 def get_mask(bgr, W, H, seg):
@@ -84,7 +95,7 @@ def background_blur(bgr, W, H, in_t, b_t, out_t, seg, passes, npu_blur=False):
         # EXPERIMENTAL: NPU color multi-pass blur. Known quality issues (fixed-point: the
         # filter2d int16->int8 coeff truncation + multi-pass gain compounding → artifacts /
         # saturation). Needs a purpose-built unity-gain NPU blur kernel. Not production-ready.
-        blurred = npu_color_blur(bgr, W, H, passes)
+        blurred = npu_color_blur(bgr, W, H, passes, _NPU_SCALE)
     else:
         # Default: strong CPU Gaussian (clean bokeh). The NPU's proven role here is the edge
         # effect; a clean NPU blur is WIP (see npu_blur above).
@@ -99,13 +110,15 @@ def main():
     ap.add_argument("-W", "--width", type=int, default=1280)
     ap.add_argument("-H", "--height", type=int, default=720)
     ap.add_argument("--passes", type=int, default=4, help="blur strength")
-    ap.add_argument("--npu-blur", action="store_true", help="EXPERIMENTAL: blur on NPU (quality WIP); default = clean CPU Gaussian")
+    ap.add_argument("--npu-blur", action="store_true", help="blur on the NPU (custom kernel); default = CPU Gaussian")
+    ap.add_argument("--npu-scale", type=int, default=4, help="NPU blur downscale factor for real-time (1=full res)")
     ap.add_argument("--onnx", default=None, help="optional segmentation ONNX model for opencv-DNN")
     ap.add_argument("--loopback", default=None)
     ap.add_argument("--frames", type=int, default=60)
     ap.add_argument("--image", default=None, help="blur a still image instead of the camera (test)")
     opts = ap.parse_args()
     W, H = opts.width, opts.height
+    global _NPU_SCALE; _NPU_SCALE = opts.npu_scale
     seg = load_seg(opts.onnx)
     ts = W * H * 4
     in_t = iron.tensor(np.zeros(ts, np.int8), dtype=np.int8, device="npu")
