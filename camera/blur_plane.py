@@ -12,7 +12,7 @@
 # Unity gain: int16 coeffs >>8 -> int8 [[1,2,1],[2,4,2],[1,2,1]] (sum 16); filter2d stores
 # acc >> (SRS_SHIFT-8 = 4) = acc/16 = exact weighted mean.
 
-import sys
+import sys, os
 #
 # DEFINITIVE DIAGNOSIS 2026-06-24: with the correct (worker-produced) dataflow AND unity-gain coeffs,
 # the stock kernels.filter2d STILL produces value-dependent output that SATURATES bright pixels to the
@@ -25,6 +25,7 @@ import numpy as np
 import aie.iron as iron
 from aie.iron import Buffer, CompileTime, In, ObjectFifo, Out, Program, Runtime, Worker, kernels
 from aie.iron.controlflow import range_
+from aie.iron.kernels._common import _make_extern
 
 
 @iron.jit(aiecc_flags=["--alloc-scheme=basic-sequential"])
@@ -40,7 +41,12 @@ def blur_plane(
     line_ty = np.ndarray[(line_width,), np.dtype[np.uint8]]
 
     pass_through_line = kernels.passthrough(tile_size=line_width, dtype=np.uint8)
-    filter2d_line_kernel = kernels.filter2d(line_width=line_width)
+    _kernel_ty = np.ndarray[(3, 3), np.dtype[np.int16]]
+    _blur_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kernels", "blur3x3.cc")
+    filter2d_line_kernel = _make_extern(
+        "blurLine", _blur_src,
+        [line_ty, line_ty, line_ty, line_ty, np.int32, _kernel_ty],
+    )
     # unity-gain Gaussian (>>8 -> int8 [1,2,1;2,4,2;1,2,1], sum 16; filter2d >>4 = /16)
     filter_kernel_buff = Buffer(
         np.ndarray[(3, 3), np.dtype[np.int16]],

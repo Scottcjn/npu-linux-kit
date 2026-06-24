@@ -21,20 +21,25 @@ import numpy as np, cv2
 MLIR_AIE = os.environ.get("MLIR_AIE_DIR", os.path.expanduser("~/open-xdna/mlir-aie"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aie.iron as iron
-from blur_pipeline import blur                      # proven NPU grayscale box-blur design
+from blur_plane import blur_plane                    # custom clean NPU 3x3 blur kernel (blur3x3.cc)
 
 
-def npu_color_blur(bgr, W, H, in_t, b_t, out_t, passes=1):
-    """Color blur on the NPU: blur each channel via the grayscale design, N passes, recombine."""
+_plane_in = _plane_out = _plane_n = None
+def npu_color_blur(bgr, W, H, passes=1):
+    """Clean color blur on the NPU: blur each channel (uint8 plane) with the custom blur3x3 kernel,
+    N passes, recombine. No rgba2gray round-trip / no add_weighted — bit-clean, no speckle."""
+    global _plane_in, _plane_out, _plane_n
+    if _plane_n != W * H:
+        _plane_in = iron.tensor(np.zeros(W * H, np.uint8), dtype=np.uint8, device="npu")
+        _plane_out = iron.zeros(W * H, dtype=np.uint8, device="npu")
+        _plane_n = W * H
     out = bgr.copy()
-    alpha = np.full((H, W), 255, np.uint8)
-    for c in range(3):                               # B, G, R
-        ch = out[:, :, c]
+    for c in range(3):
+        ch = np.ascontiguousarray(out[:, :, c])
         for _ in range(passes):
-            rgba = np.dstack([ch, ch, ch, alpha]).reshape(-1)   # all channels = this channel
-            in_t.numpy()[:] = rgba.view(np.int8)
-            blur(in_t, b_t, out_t, width=W, height=H)
-            ch = out_t.numpy().view(np.uint8).reshape(H, W, 4)[:, :, 0]   # blurred channel
+            _plane_in.numpy()[:] = ch.reshape(-1)
+            blur_plane(_plane_in, _plane_out, width=W, height=H)
+            ch = _plane_out.numpy().reshape(H, W).copy()
         out[:, :, c] = ch
     return out
 
@@ -79,7 +84,7 @@ def background_blur(bgr, W, H, in_t, b_t, out_t, seg, passes, npu_blur=False):
         # EXPERIMENTAL: NPU color multi-pass blur. Known quality issues (fixed-point: the
         # filter2d int16->int8 coeff truncation + multi-pass gain compounding → artifacts /
         # saturation). Needs a purpose-built unity-gain NPU blur kernel. Not production-ready.
-        blurred = npu_color_blur(bgr, W, H, in_t, b_t, out_t, passes)
+        blurred = npu_color_blur(bgr, W, H, passes)
     else:
         # Default: strong CPU Gaussian (clean bokeh). The NPU's proven role here is the edge
         # effect; a clean NPU blur is WIP (see npu_blur above).

@@ -1,0 +1,7 @@
+Thanks — and that's a sharp catch, you're right to push on it. I re-ran it and put it through an independent model review, and the honest answer lands on your side:
+
+It's a real measurement but most likely a software-stack artifact, not a hardware result. Re-test (7B Q4_K, pp512, 780M via llama.cpp Vulkan/RADV): sweeping ubatch 256 → 1024 → 2048 left prefill flat at ~300 t/s, and pp1024 was ~295 — so it's robust, not an under-tuned batch-size knob. But that ~2.6x CPU lead almost certainly reflects the immaturity of the Mesa/RADV Vulkan Q4_K GEMM kernels (tiling / register-blocking / quantized paths) vs llama.cpp's hand-tuned AVX-512 CPU GEMM — not the 780M's hardware ceiling. RDNA3 has the FP16 throughput; the open Vulkan path just isn't realizing it on prefill yet.
+
+So I've narrowed the claim in the repo to: "on the llama.cpp Vulkan/RADV stack, CPU prefill beats the 780M ~2.6x, robust to tuning — a software-stack characteristic, not proven hardware superiority." A ROCm comparison on the same silicon would settle it (no ROCm on my box yet — it's exactly what I'd test on AMD Dev Cloud). Decode still favors the 780M (+38–44%), as expected.
+
+Updated BENCHMARKS.md with the re-test + this caveat, credited to your review. 🙏
