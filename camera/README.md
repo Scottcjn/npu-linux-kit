@@ -9,15 +9,18 @@ Windows ships on the NPU and Linux lacks.
 - ✅ **edge-stylize** (`--effect edge`) — rgba2gray → 3×3 Laplacian → threshold → blend.
 - ✅ **blur** (`--effect blur`, `blur_pipeline.py`) — NPU 3×3 box-blur conv, **449 FPS @720p**, verified
   (row variance 16256→255 on a 1px test pattern; `test_blur.py`). v1 is grayscale + a single 3×3 pass (mild blur).
-- 🟡 **background blur** (`npu_background_blur.py`) — full pipeline built & running end-to-end:
-  (1) ✅ **per-channel color** blur (the grayscale design run on R/G/B, recombined),
-  (2) ✅ **multi-pass** for strength (`--passes N`; ~108 ms/frame at 6 passes/ch on the still path),
-  (3) ✅ **segmentation composite** (sharp-foreground + NPU-blurred-background, feathered edges).
-  **The NPU does the blur; segmentation runs on the CPU.** Honest v1 caveats:
-  (a) blur quality has line/streak artifacts — needs gaussian coeffs / per-pass gain fix (not clean bokeh yet);
-  (b) the mask defaults to a **center-ellipse PLACEHOLDER** — real segmentation drops in via MediaPipe
-  (`pip install mediapipe`) or an ONNX model (`--onnx model.onnx`, opencv-DNN); a seg model running
-  *on the NPU* is the future step. Test on a still: `python3 npu_background_blur.py --image scene.png`.
+- ✅ **background blur** (`npu_background_blur.py`) — clean, working end-to-end:
+  - **Segmentation = real**: MODNet via onnxruntime (`--onnx modnet.onnx`) → accurate person cutout
+    (~136 ms/frame CPU). Center-ellipse placeholder only if no model is given.
+  - **Blur = clean, on the NPU**: a **custom AIE kernel** (`kernels/blur3x3.cc`, bound by `blur_plane.py`)
+    gives a correct, artifact-free unity-gain Gaussian — int32 acc + int16 coeffs + `>>12` + `[0,255]`
+    clamp, where the stock `filter2d` saturated bright pixels. Enable with `--npu-blur`.
+  - **Composite**: sharp foreground + blurred background, feathered edges.
+  - **Perf caveat (honest):** the custom kernel is *scalar*, so the full color multi-pass NPU blur is
+    ~2.4 FPS (correct, not real-time). **Real-time needs a vectorized kernel** (fixing the vector-path
+    int8/saturation). The default blur path is the clean CPU Gaussian for real-time use.
+  - Get MODNet: `curl -L -o modnet.onnx https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx`
+  - Still test: `python3 npu_background_blur.py --image scene.png --onnx modnet.onnx [--npu-blur]`
 
 ## Measured (Ryzen 7 8845HS, XDNA1, Ubuntu 25.10 / kernel 6.17)
 
