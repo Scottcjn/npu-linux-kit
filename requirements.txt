@@ -1,6 +1,7 @@
 # Host-side deps (install into your IRON/mlir-aie venv):
 opencv-python-headless>=4.8
 pyvirtualcam>=0.11
+onnxruntime>=1.16
 numpy>=1.24
 ml_dtypes>=0.3
 # Plus a working XDNA NPU stack (XRT + amd/xdna-driver + IRON/mlir-aie + Peano) — see open-xdna.
