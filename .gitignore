@@ -6,3 +6,6 @@ blur_*.png
 cam_sample_*.png
 _scene.png
 bgblur_*.png
+*.onnx
+_*.png
+_*.py

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Scott Boudreaux / Elyan Labs. Commercial license: see ../COMMERCIAL.md
 #
-# open-xdna / npu-linux-kit :: background blur — NPU does the blur, the marquee Studio-Effects feature.
+# open-xdna / npu-linux-kit :: background blur — the marquee Studio-Effects feature.
 #
 #   (1) COLOR blur   — the grayscale blur design is run PER CHANNEL (R/G/B), recombined → color blur.
 #   (2) MULTI-PASS   — each channel is blurred N times for strong bokeh (449 FPS/pass → headroom).
@@ -11,7 +11,9 @@
 #       a center-ellipse PLACEHOLDER (honest fallback; not real segmentation). A seg model running
 #       ON the NPU is the future drop-in — the blur engine is already proven on-NPU.
 #
-# Honesty: the BLUR runs on the NPU (its strength); SEGMENTATION currently runs on the CPU.
+# Honesty (v1): blur defaults to a clean CPU Gaussian; the NPU blur path (--npu-blur) is
+# EXPERIMENTAL (fixed-point quality WIP). Segmentation runs on the CPU. The proven NPU effect is
+# the edge-stylize in npu_camera_daemon.py; a clean on-NPU blur + on-NPU seg are the next builds.
 
 import os, sys, time, argparse
 import numpy as np, cv2
@@ -44,11 +46,11 @@ def get_mask(bgr, W, H, seg):
         res = obj.process(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         m = (res.segmentation_mask > 0.5).astype(np.uint8)
         return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
-    if kind == "onnx":
-        blobimg = cv2.dnn.blobFromImage(bgr, 1/255.0, (256, 256), swapRB=True)
-        obj.setInput(blobimg); out = obj.forward()
-        m = (out[0, 0] > 0.5).astype(np.uint8)
-        return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
+    if kind == "onnx":                               # onnxruntime session (MODNet-style matte)
+        inp = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), (512, 512)).astype(np.float32)
+        inp = ((inp / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)[None]   # [-1,1], NCHW RGB
+        out = obj.run(None, {obj.get_inputs()[0].name: inp})[0]
+        return (cv2.resize(out[0, 0], (W, H)) > 0.5).astype(np.uint8)
     # placeholder: center ellipse (NOT real segmentation — demo stub)
     m = np.zeros((H, W), np.uint8)
     cv2.ellipse(m, (W // 2, H // 2), (W // 5, int(H * 0.45)), 0, 0, 360, 1, -1)
@@ -62,15 +64,27 @@ def load_seg(onnx_path=None):
     except Exception:
         pass
     if onnx_path and os.path.exists(onnx_path):
-        return ("onnx", cv2.dnn.readNetFromONNX(onnx_path))
+        try:
+            import onnxruntime as ort
+            return ("onnx", ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"]))
+        except Exception as e:
+            print(f"  [seg] onnxruntime load failed: {e}")
     print("  [seg] no mediapipe/onnx — using CENTER-ELLIPSE PLACEHOLDER (not real segmentation)")
     return ("placeholder", None)
 
 
-def background_blur(bgr, W, H, in_t, b_t, out_t, seg, passes):
-    mask = get_mask(bgr, W, H, seg)                          # CPU
-    blurred = npu_color_blur(bgr, W, H, in_t, b_t, out_t, passes)   # NPU
-    m3 = cv2.GaussianBlur(mask.astype(np.float32), (7, 7), 0)[:, :, None]   # feather edges (CPU)
+def background_blur(bgr, W, H, in_t, b_t, out_t, seg, passes, npu_blur=False):
+    mask = get_mask(bgr, W, H, seg)                          # CPU segmentation
+    if npu_blur:
+        # EXPERIMENTAL: NPU color multi-pass blur. Known quality issues (fixed-point: the
+        # filter2d int16->int8 coeff truncation + multi-pass gain compounding → artifacts /
+        # saturation). Needs a purpose-built unity-gain NPU blur kernel. Not production-ready.
+        blurred = npu_color_blur(bgr, W, H, in_t, b_t, out_t, passes)
+    else:
+        # Default: strong CPU Gaussian (clean bokeh). The NPU's proven role here is the edge
+        # effect; a clean NPU blur is WIP (see npu_blur above).
+        blurred = cv2.GaussianBlur(bgr, (0, 0), sigmaX=8 + 2 * passes)
+    m3 = cv2.GaussianBlur(mask.astype(np.float32), (7, 7), 0)[:, :, None]   # feather mask edges
     return (bgr * m3 + blurred * (1 - m3)).astype(np.uint8)
 
 
@@ -79,7 +93,8 @@ def main():
     ap.add_argument("--device", default="/dev/video0")
     ap.add_argument("-W", "--width", type=int, default=1280)
     ap.add_argument("-H", "--height", type=int, default=720)
-    ap.add_argument("--passes", type=int, default=4, help="blur passes per channel (strength)")
+    ap.add_argument("--passes", type=int, default=4, help="blur strength")
+    ap.add_argument("--npu-blur", action="store_true", help="EXPERIMENTAL: blur on NPU (quality WIP); default = clean CPU Gaussian")
     ap.add_argument("--onnx", default=None, help="optional segmentation ONNX model for opencv-DNN")
     ap.add_argument("--loopback", default=None)
     ap.add_argument("--frames", type=int, default=60)
@@ -94,8 +109,8 @@ def main():
 
     if opts.image:                                           # still-image test path
         img = cv2.resize(cv2.imread(opts.image), (W, H))
-        background_blur(img, W, H, in_t, b_t, out_t, seg, opts.passes)  # warm
-        t0 = time.perf_counter(); res = background_blur(img, W, H, in_t, b_t, out_t, seg, opts.passes)
+        background_blur(img, W, H, in_t, b_t, out_t, seg, opts.passes, opts.npu_blur)  # warm
+        t0 = time.perf_counter(); res = background_blur(img, W, H, in_t, b_t, out_t, seg, opts.passes, opts.npu_blur)
         dt = time.perf_counter() - t0
         cv2.imwrite("./bgblur_before.png", img); cv2.imwrite("./bgblur_after.png", res)
         print(f"  background-blur still: {dt*1e3:.1f} ms ({opts.passes} passes/ch, seg={seg[0]}) -> saved bgblur_*.png")
@@ -106,7 +121,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, W); cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
     ok, f = cap.read()
     if not ok: print("ERROR: no camera frame"); sys.exit(1)
-    f = cv2.resize(f, (W, H)); background_blur(f, W, H, in_t, b_t, out_t, seg, opts.passes)  # warm
+    f = cv2.resize(f, (W, H)); background_blur(f, W, H, in_t, b_t, out_t, seg, opts.passes, opts.npu_blur)  # warm
     n = 0; t0 = time.perf_counter()
     sink = None
     if opts.loopback:
@@ -117,13 +132,13 @@ def main():
         ok, f = cap.read()
         if not ok: break
         if f.shape[1] != W or f.shape[0] != H: f = cv2.resize(f, (W, H))
-        res = background_blur(f, W, H, in_t, b_t, out_t, seg, opts.passes)
+        res = background_blur(f, W, H, in_t, b_t, out_t, seg, opts.passes, opts.npu_blur)
         if sink: sink.send(cv2.cvtColor(res, cv2.COLOR_BGR2RGB)); sink.sleep_until_next_frame()
         n += 1
     dt = time.perf_counter() - t0; cap.release()
     if sink: sink.close()
     print(f"  background-blur live: {n} frames, {n/dt:.1f} FPS end-to-end "
-          f"({opts.passes} passes/ch, seg={seg[0]}, blur on NPU)")
+          f"({opts.passes} strength, seg={seg[0]}, blur={'NPU-exp' if opts.npu_blur else 'CPU'})")
 
 
 if __name__ == "__main__":

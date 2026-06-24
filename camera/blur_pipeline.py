@@ -80,13 +80,13 @@ def blur(
     of_local = ObjectFifo(line_bytes_ty, depth=1, name="OF_local")
 
     # Laplacian edge-detect kernel: cross stencil with -16384 center, 4096 edges.
-    # Box blur: unity-gain 3x3 (Q12 fixed point, 4096/9 ~= 455 per tap, sum ~= 1.0)
-    vb = 455
+    # Gaussian blur: int16 coeffs >>8 -> int8 [[1,2,1],[2,4,2],[1,2,1]] (sum 16), then >>4 (SRS_SHIFT-8)
+    # = exact unity-gain weighted mean. (A box can't be unity-gain here: 9/16 under-gains.)
     filter_kernel_buff = Buffer(
         np.ndarray[(3, 3), np.dtype[np.int16]],
         name="kernel",
         initial_value=np.array(
-            [[vb, vb, vb], [vb, vb, vb], [vb, vb, vb]], dtype=np.int16
+            [[256, 512, 256], [512, 1024, 512], [256, 512, 256]], dtype=np.int16
         ),
     )
 
