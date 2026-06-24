@@ -48,7 +48,8 @@ def npu_color_blur(bgr, W, H, passes=1, scale=4):
     background bokeh is low-frequency, so a downscaled blur is visually ~identical and ~scale^2 faster.
     The blur itself is bit-clean (custom blur3x3 kernel: no rgba2gray round-trip, no speckle)."""
     if scale > 1:
-        w2, h2 = (W // scale) & ~1, (H // scale) & ~1
+        w2 = max(64, ((W // scale) // 64) * 64)   # width must be a multiple of 64 (AIE granularity)
+        h2 = max(2, ((H // scale) // 2) * 2)       # even height
         small = cv2.resize(bgr, (w2, h2), interpolation=cv2.INTER_AREA)
         sb = _blur_planes_npu(small, w2, h2, passes)
         return cv2.resize(sb, (W, H), interpolation=cv2.INTER_LINEAR)
