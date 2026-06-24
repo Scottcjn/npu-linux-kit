@@ -2,3 +2,5 @@ cam_sample_*.png
 __pycache__/
 *.pyc
 .venv/
+blur_*.png
+cam_sample_*.png

@@ -17,15 +17,16 @@ import cv2
 
 MLIR_AIE = os.environ.get("MLIR_AIE_DIR", os.path.expanduser("~/open-xdna/mlir-aie"))
 sys.path.insert(0, os.path.join(MLIR_AIE, "programming_examples/vision/edge_detect"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # for blur_pipeline (same dir)
 import aie.iron as iron
-from edge_detect import edge_detect          # @iron.jit per-frame vision pipeline
+_DESIGN = None                               # @iron.jit per-frame pipeline; set in main() from --effect
 
 
 def npu_effect(frame_bgr, W, H, in_t, b_t, out_t):
-    """One frame: BGR uint8 -> NPU edge-stylize -> BGR uint8."""
+    """One frame: BGR uint8 -> NPU effect -> BGR uint8."""
     rgba = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA).reshape(-1)          # H*W*4 uint8
     in_t.numpy()[:] = rgba.view(np.int8)                                    # in-place into NPU tensor
-    edge_detect(in_t, b_t, out_t, width=W, height=H)
+    _DESIGN(in_t, b_t, out_t, width=W, height=H)
     out_rgba = out_t.numpy().view(np.uint8).reshape(H, W, 4)
     return cv2.cvtColor(out_rgba, cv2.COLOR_RGBA2BGR)
 
@@ -38,9 +39,16 @@ def main():
     ap.add_argument("--frames", type=int, default=120)
     ap.add_argument("--loopback", default=None, help="v4l2loopback device to output to, e.g. /dev/video10")
     ap.add_argument("--stream-frames", type=int, default=0, help="frames to stream (0 = until Ctrl-C)")
+    ap.add_argument("--effect", choices=["edge", "blur"], default="edge", help="NPU effect")
     ap.add_argument("--out", default="./cam_sample")
     opts = ap.parse_args()
     W, H = opts.width, opts.height
+
+    global _DESIGN
+    if opts.effect == "blur":
+        from blur_pipeline import blur as _DESIGN
+    else:
+        from edge_detect import edge_detect as _DESIGN
 
     cap = cv2.VideoCapture(opts.device, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))   # MJPG → higher USB capture FPS

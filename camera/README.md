@@ -6,10 +6,14 @@ Windows ships on the NPU and Linux lacks.
 
 ## Status
 
-- ✅ **Working: edge-stylize effect** (rgba2gray → 3×3 Laplacian filter2d → threshold → blend),
-  live camera → NPU → v4l2loopback virtual cam.
-- 🚧 **Next: background blur** — needs a person/background segmentation model (MODNet/U-Net class)
-  running on the NPU. The FPS headroom below says it's feasible; not built yet.
+- ✅ **edge-stylize** (`--effect edge`) — rgba2gray → 3×3 Laplacian → threshold → blend.
+- ✅ **blur** (`--effect blur`, `blur_pipeline.py`) — NPU 3×3 box-blur conv, **449 FPS @720p**, verified
+  (row variance 16256→255 on a 1px test pattern; `test_blur.py`). v1 is grayscale + a single 3×3 pass (mild blur).
+- 🚧 **Background blur** (the marquee feature) — three pieces on top of the proven blur engine, all
+  feasible given the FPS headroom but not built: (1) **per-channel color** filtering (current path is
+  grayscale), (2) **multi-pass / larger kernel** for strong bokeh (449 FPS ÷ ~8 passes is still real-time),
+  (3) a **person/background segmentation mask** (MODNet/U-Net class) to composite blurred-background +
+  sharp-foreground.
 
 ## Measured (Ryzen 7 8845HS, XDNA1, Ubuntu 25.10 / kernel 6.17)
 
