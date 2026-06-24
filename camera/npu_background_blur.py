@@ -55,18 +55,22 @@ def npu_color_blur(bgr, W, H, passes=1, scale=4):
     return _blur_planes_npu(bgr, W, H, passes)
 
 
+_mask_cache = {"m": None, "i": -1, "every": 3}
 def get_mask(bgr, W, H, seg):
-    """Person mask (1=foreground). seg = ('mediapipe', obj) | ('onnx', net) | ('placeholder', None)."""
+    """Person mask (1=foreground). Recomputed every Nth frame and reused between (people move slowly)."""
+    _mask_cache["i"] += 1
+    if _mask_cache["m"] is not None and seg[0] != "placeholder" and (_mask_cache["i"] % _mask_cache["every"]):
+        return _mask_cache["m"]
     kind, obj = seg
     if kind == "mediapipe":
         res = obj.process(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         m = (res.segmentation_mask > 0.5).astype(np.uint8)
         return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
     if kind == "onnx":                               # onnxruntime session (MODNet-style matte)
-        inp = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), (512, 512)).astype(np.float32)
+        inp = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), (256, 256)).astype(np.float32)
         inp = ((inp / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)[None]   # [-1,1], NCHW RGB
         out = obj.run(None, {obj.get_inputs()[0].name: inp})[0]
-        return (cv2.resize(out[0, 0], (W, H)) > 0.5).astype(np.uint8)
+        m = (cv2.resize(out[0, 0], (W, H)) > 0.5).astype(np.uint8); _mask_cache["m"] = m; return m
     # placeholder: center ellipse (NOT real segmentation — demo stub)
     m = np.zeros((H, W), np.uint8)
     cv2.ellipse(m, (W // 2, H // 2), (W // 5, int(H * 0.45)), 0, 0, 360, 1, -1)
