@@ -1,0 +1,4 @@
+cam_sample_*.png
+__pycache__/
+*.pyc
+.venv/
