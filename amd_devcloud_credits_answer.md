@@ -13,11 +13,15 @@ Developer Cloud for the **datacenter→client pipeline** the full AMD stack is b
    infer on XDNA" loop. My kit currently runs segmentation on the CPU; this is how I move it onto AMD
    silicon end-to-end.
 
-2. **Validate kernels and my heterogeneous-inference findings on ROCm.** I've measured a clear
-   device-specialization pattern on a Ryzen 8845HS (decode→iGPU, prefill→CPU, prune→NPU). The Dev
-   Cloud lets me port my hand-authored matmul/conv/prune kernels to ROCm and benchmark how that
-   picture changes on datacenter GPUs — useful guidance for anyone building heterogeneous Ryzen AI
-   pipelines.
+2. **Settle a live, community-reviewed open question: ROCm vs Vulkan GEMM.** I measured that on a
+   Ryzen 8845HS, CPU prompt-prefill beats the Radeon 780M iGPU ~2.6x on llama.cpp's Vulkan/RADV
+   backend (while decode favors the iGPU). A community reviewer rightly questioned whether that's a
+   hardware result or an immature open Vulkan GEMM path; my on-silicon re-test showed it's robust to
+   ubatch/length tuning, which points at the Mesa/RADV Q4_K GEMM kernels rather than the hardware.
+   The clean way to settle it is to run the **identical workload on a mature ROCm/hipBLAS GEMM path**
+   and profile achieved FLOPS/occupancy with rocprof — isolating software-stack vs hardware. Instinct
+   GPUs on the Dev Cloud let me do exactly that, then port my hand-authored matmul/conv/prune kernels
+   to ROCm and publish honest heterogeneous-partitioning guidance for Ryzen AI builders.
 
 3. **LLM inference & quantization research.** Benchmark and quantize LLMs (Gemma/Qwen) on MI300X to
    feed the integrated-NPU deployment work, and validate my non-bijunctive prune/collapse experiments
