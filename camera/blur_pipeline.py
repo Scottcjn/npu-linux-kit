@@ -1,3 +1,7 @@
+# NPU blur design (adapted from edge_detect). GAIN FIX 2026-06-24: add_weighted alpha 32767->16384
+# (unity on uniform 64). KNOWN: per-channel round-trip + multipass still adds diagonal color speckle
+# + mild under-gain on bright values. A clean NPU blur needs a PURPOSE-BUILT single-channel/RGBA
+# design (no rgba2gray round-trip, no add_weighted) — see camera/README 'NEXT'.
 # vision/edge_detect/edge_detect.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
@@ -184,7 +188,7 @@ def blur(
         elem_in2 = of_in2.acquire(1)
         elem_out2 = of_out.acquire(1)
 
-        alpha, beta, gamma = 32767, 0, 0
+        alpha, beta, gamma = 16384, 0, 0
         add_weighted_line(
             elem_in1,
             elem_in2,
