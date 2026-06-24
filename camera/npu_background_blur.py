@@ -116,7 +116,7 @@ def main():
     ap.add_argument("-H", "--height", type=int, default=720)
     ap.add_argument("--passes", type=int, default=4, help="blur strength")
     ap.add_argument("--npu-blur", action="store_true", help="blur on the NPU (custom kernel); default = CPU Gaussian")
-    ap.add_argument("--npu-scale", type=int, default=4, help="NPU blur downscale factor for real-time (1=full res)")
+    ap.add_argument("--npu-scale", type=int, default=4, help="NPU blur downscale factor (4 = validated/known-good; >4 can ERT-timeout, AIE dim-sensitive)")
     ap.add_argument("--onnx", default=None, help="optional segmentation ONNX model for opencv-DNN")
     ap.add_argument("--loopback", default=None)
     ap.add_argument("--frames", type=int, default=60)
