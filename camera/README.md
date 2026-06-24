@@ -9,11 +9,15 @@ Windows ships on the NPU and Linux lacks.
 - ✅ **edge-stylize** (`--effect edge`) — rgba2gray → 3×3 Laplacian → threshold → blend.
 - ✅ **blur** (`--effect blur`, `blur_pipeline.py`) — NPU 3×3 box-blur conv, **449 FPS @720p**, verified
   (row variance 16256→255 on a 1px test pattern; `test_blur.py`). v1 is grayscale + a single 3×3 pass (mild blur).
-- 🚧 **Background blur** (the marquee feature) — three pieces on top of the proven blur engine, all
-  feasible given the FPS headroom but not built: (1) **per-channel color** filtering (current path is
-  grayscale), (2) **multi-pass / larger kernel** for strong bokeh (449 FPS ÷ ~8 passes is still real-time),
-  (3) a **person/background segmentation mask** (MODNet/U-Net class) to composite blurred-background +
-  sharp-foreground.
+- 🟡 **background blur** (`npu_background_blur.py`) — full pipeline built & running end-to-end:
+  (1) ✅ **per-channel color** blur (the grayscale design run on R/G/B, recombined),
+  (2) ✅ **multi-pass** for strength (`--passes N`; ~108 ms/frame at 6 passes/ch on the still path),
+  (3) ✅ **segmentation composite** (sharp-foreground + NPU-blurred-background, feathered edges).
+  **The NPU does the blur; segmentation runs on the CPU.** Honest v1 caveats:
+  (a) blur quality has line/streak artifacts — needs gaussian coeffs / per-pass gain fix (not clean bokeh yet);
+  (b) the mask defaults to a **center-ellipse PLACEHOLDER** — real segmentation drops in via MediaPipe
+  (`pip install mediapipe`) or an ONNX model (`--onnx model.onnx`, opencv-DNN); a seg model running
+  *on the NPU* is the future step. Test on a still: `python3 npu_background_blur.py --image scene.png`.
 
 ## Measured (Ryzen 7 8845HS, XDNA1, Ubuntu 25.10 / kernel 6.17)
 

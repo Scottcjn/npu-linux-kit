@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 blur_*.png
 cam_sample_*.png
+_scene.png
+bgblur_*.png

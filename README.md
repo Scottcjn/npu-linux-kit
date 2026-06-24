@@ -25,7 +25,7 @@ honestly (no "coming soon" dressed up as done).
 | Module | What it does | NPU fit | Status |
 |--------|--------------|---------|--------|
 | **[camera/](camera/)** | Real-time webcam effects → a **v4l2 virtual camera** (Zoom/OBS/browser) | conv/vision — its native strength | ✅ **working** (edge-stylize) |
-| camera/ — background blur | Person/background segmentation blur (the "Studio Effects" feature) | conv/CNN | 🚧 **next** (needs a seg model on the NPU; FPS headroom says it's feasible) |
+| camera/ — background blur | Sharp foreground + NPU-blurred background | conv/CNN | 🟡 **pipeline working** (NPU color multi-pass blur + composite; v1 blur artifacts + placeholder/CPU seg) |
 | **[embeddings/](embeddings/)** | Batch sentence/RAG embeddings, offloaded from CPU/iGPU | batchable matmul → amortizes dispatch | 🔬 candidate |
 | **[audio/](audio/)** | Wake-word / real-time denoise | the NPU's classic edge job | 🔬 candidate (untested) |
 | **[ggml-backend/](ggml-backend/)** | XDNA backend for ggml/llama.cpp | foundational enabler | 🚧 planned (biggest lift) |
