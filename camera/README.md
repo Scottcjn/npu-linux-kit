@@ -16,9 +16,11 @@ Windows ships on the NPU and Linux lacks.
     gives a correct, artifact-free unity-gain Gaussian — int32 acc + int16 coeffs + `>>12` + `[0,255]`
     clamp, where the stock `filter2d` saturated bright pixels. Enable with `--npu-blur`.
   - **Composite**: sharp foreground + blurred background, feathered edges.
-  - **Perf caveat (honest):** the custom kernel is *scalar*, so the full color multi-pass NPU blur is
-    ~2.4 FPS (correct, not real-time). **Real-time needs a vectorized kernel** (fixing the vector-path
-    int8/saturation). The default blur path is the clean CPU Gaussian for real-time use.
+  - **Perf (measured):** with `--npu-scale 4`, the NPU blur runs at reduced res (bokeh is low-frequency,
+    so visually identical) and is **free within the frame budget**. End-to-end runs at the **camera's full
+    rate — ~16 FPS on this USB webcam, which is the capture ceiling, NOT compute-bound** (NPU blur + MODNet
+    seg both keep up; passes 1/2/3 all hit ~16 FPS). A faster camera yields more FPS with the NPU keeping up.
+    `--npu-scale 4` is the validated config; higher scales can ERT-timeout (AIE dimension-sensitive).
   - Get MODNet: `curl -L -o modnet.onnx https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx`
   - Still test: `python3 npu_background_blur.py --image scene.png --onnx modnet.onnx [--npu-blur]`
 
